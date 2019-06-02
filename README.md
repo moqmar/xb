@@ -19,12 +19,12 @@ services:
     restart: always
     volumes: ["database-root:/var/lib/mysql", "database-socket:/var/run/mysqld", "database-config:/etc/mysql", "./database:/backup"]
     environment:
-      BACKUP_EVERY_MINUTES: 30 # make an incremental backup every 30 minutes
-      FULL_BACKUP_INTERVAL: 12 # every 12th backup should be a full backup (= every 6 hours)
-      KEEP_FULL_BACKUPS: 6     # keep 6 full backups, delete everything older than that (= 36 hours)
-      MYSQL_ROOT_PASSWORD: helloworld123 # required!
-      ERROR_COMMAND: # called upon error - percona logs are in /var/log/xtrabackup.log
-      SUCCESS_COMMAND: # called upon success - percona logs are in /var/log/xtrabackup.log
+      BACKUP_EVERY_MINUTES: 180  # make an incremental backup every 3 hours minutes
+      FULL_BACKUP_INTERVAL: 8  # every 8th backup should be a full backup (= every 24 hours)
+      KEEP_FULL_BACKUPS: 3  # keep 3 full backups, delete everything older than that (= 2-3 days)
+      MYSQL_ROOT_PASSWORD: helloworld123  # required!
+      ERROR_COMMAND:  # called upon error - percona logs are in /var/log/xtrabackup.log
+      SUCCESS_COMMAND:  # called upon success - percona logs are in /var/log/xtrabackup.log
 
 volumes:
   database-root:
@@ -35,7 +35,8 @@ volumes:
 ## Restore:
 ```bash
 docker-compose stop # stop everything so we're not breaking anything
-ls -1 database # list all available backups
-docker-compose run --no-deps --rm backup restore 2019-06-02--22-49-00 # restore the backup
+docker-compose run --rm backup restore # interactively list all available backups & restore one of them
 docker-compose up -d # start everything again
 ```
+
+With `docker-compose run --rm backup restore <subdirectory>`, you can non-interactively restore a specific backup.
