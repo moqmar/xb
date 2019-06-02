@@ -1,0 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+if [ -z "${1+x}" ]; then
+    ls -1 /backup
+    read -p "Enter the filename of the backup to restore: " name
+else
+    name="$1"
+fi
+
+if [ -n "$name" ] && ! [ -d "/backup/$name" ]; then
+    echo "This backup (/backup/$name) doesn't exist."
+    exit 1
+fi
+
+shopt -s dotglob; rm -rf /var/lib/mysql/*
+if echo "$name" | grep -e '--full$'; then
+    xtrabackup --copy-back --datadir /var/lib/mysql "--target-dir=/backup/$name"
+else
+    full=`ls -1 /backup | sort -r | grep -A10000 -F "$name" | grep -m1 -e '--full$' || true`
+    xtrabackup --copy-back --datadir /var/lib/mysql "--target-dir=/backup/$full" "--incremental-dir=/backup/$name"
+fi

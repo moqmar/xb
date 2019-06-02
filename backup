@@ -1,0 +1,65 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+if [ -z "${BACKUP_EVERY_MINUTES+x}" ]; then BACKUP_EVERY_MINUTES=180; echo "BACKUP_EVERY_MINUTES not set, defaulting to 180."; fi
+if [ -z "${FULL_BACKUP_INTERVAL+x}" ]; then FULL_BACKUP_INTERVAL=8; echo "FULL_BACKUP_INTERVAL not set, defaulting to 8."; fi
+if [ -z "${KEEP_FULL_BACKUPS+x}" ]; then KEEP_FULL_BACKUPS=3; echo "KEEP_FULL_BACKUPS not set, defaulting to 3."; fi
+if [ -z "${MYSQL_ROOT_PASSWORD+x}" ]; then MYSQL_ROOT_PASSWORD=; echo "MYSQL_ROOT_PASSWORD not set, using an empty password."; fi
+
+function error {
+    rm -rf "/backup/$timestamp" "/backup/$timestamp--full"
+    echo "ERROR: Percona XtraBackup exited with status code $1."
+    if [ -n "${ERROR_COMMAND:+x}" ]; then bash -c "$ERROR_COMMAND"; fi
+    cat /var/log/xtrabackup.log
+}
+
+function _term {
+    echo "Termination signal received, stopping backup..."
+    stop=1
+}
+stop=
+trap _term SIGTERM
+trap _term SIGINT
+
+next_backup=`date -u --date="$(date -u '+%Y-%m-%d')" '+%s'`
+while :; do
+    # wait until next backup
+    now=`date -u '+%s'`
+    while [ $next_backup -lt $now ]; do next_backup=$((next_backup + BACKUP_EVERY_MINUTES * 60)); done
+    echo "Waiting until $(date -u --date=@$next_backup '+%Y-%m-%d--%H-%M-%S')..."
+    # use a while loop to ensure signals are still working correctly
+    while [ $(date -u '+%s') -lt $next_backup ]; do
+        sleep 1;
+        if [ "$stop" = "1" ]; then exit 0; fi
+    done
+    
+    timestamp=`date -u '+%Y-%m-%d--%H-%M-%S' --date=@$next_backup`
+    echo "Starting backup at $timestamp"
+
+    # get the latest backup named "--full"
+    last_full_backup=`ls -1 /backup | sort -r | grep -m1 -e '--full$' || true`
+    # count backups since the latest full backup
+    backups_since_last_full_backup=`ls -1 /backup | sort -r | grep -B10000 -F "$last_full_backup" | wc -l || true`
+    if [ "$last_full_backup" = "" ] || [ $backups_since_last_full_backup -ge $FULL_BACKUP_INTERVAL ]; then
+        # make a full backup
+        xtrabackup --backup "--password=$MYSQL_ROOT_PASSWORD" --datadir /var/lib/mysql "--target-dir=/backup/$timestamp--full" >>/var/log/xtrabackup.log 2>&1 || error $?
+        xtrabackup --prepare --apply-log-only "--target-dir=/backup/$timestamp--full" >>/var/log/xtrabackup.log 2>&1 || error $?
+    else
+        # make an incremental backup
+        xtrabackup --backup "--password=$MYSQL_ROOT_PASSWORD" --datadir /var/lib/mysql "--target-dir=/backup/$timestamp" "--incremental-basedir=/backup/$last_full_backup" >>/var/log/xtrabackup.log 2>&1 || error $?
+        xtrabackup --prepare --apply-log-only "--target-dir=/backup/$last_full_backup" "--incremental-dir=/backup/$timestamp" >>/var/log/xtrabackup.log 2>&1 || error $?
+    fi
+    if [ -n "${SUCCESS_COMMAND:+x}" ]; then bash -c "$SUCCESS_COMMAND"; fi
+
+    # clean up
+    nth_full_backup=`ls -1 /backup | sort -r | grep -m"$KEEP_FULL_BACKUPS" -e '--full$' | tail -n1 || true`
+    # delete all backups older than the KEEP_FULL_BACKUPS'th-latest full backup
+    [ "$nth_full_backup" != "" ] && for backup in `ls -1 /backup | sort -r | grep -A10000 -F "$nth_full_backup" | tail -n+2 || true`; do
+        rm -rf "/backup/$backup"
+    done
+
+    echo "Backup completed at $(date -u '+%Y-%m-%d--%H-%M-%S')."
+    if [ "$stop" = "1" ]; then exit 0; fi
+    next_backup=$((next_backup + BACKUP_EVERY_MINUTES * 60))
+done
